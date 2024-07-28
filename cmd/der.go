@@ -4,41 +4,12 @@ import (
 	"flag"
 	"log/slog"
 	"os"
-	"strings"
+	"slices"
 	"time"
 
+	"github.com/disc0ninja/dergo/internal"
 	"github.com/lmittmann/tint"
-	"github.com/miekg/dns"
-	"gopkg.in/yaml.v3"
 )
-
-type Records struct {
-	Records []Record `yaml:"records,flow"`
-}
-
-type Record struct {
-	Name         string   `yaml:"name"`
-	Expect       string   `yaml:"expect,omitempty"`
-	Environments []string `yaml:"environments,flow,omitempty"`
-}
-
-func query(name, server, port string) (string, error) {
-	dnsServer := server + ":" + port
-	msg := new(dns.Msg)
-	msg.SetQuestion(dns.Fqdn(name), dns.TypeA)
-
-	c := new(dns.Client)
-	res, rtt, err := c.Exchange(msg, dnsServer)
-	if err != nil {
-		slog.Error("Skill issue", "error", err)
-	}
-
-	split_ans := strings.Split(res.String(), "\t")
-	ans := strings.Trim(split_ans[len(split_ans)-1], "\n")
-	slog.Debug("Query exchanged successfully", "RTT", rtt, "Raw Answer", res.Answer, "Answer", ans)
-
-	return ans, nil
-}
 
 func main() {
 	// Setup logging
@@ -76,30 +47,31 @@ func main() {
 
 	slog.Debug("Args parsed", "filename", filename, "environment", environment)
 
-	r := Records{}
-
-	data, err := os.ReadFile(filename)
+	r, err := internal.ReadRecordsFromFile(filename)
 	if err != nil {
 		slog.Error("Skill issue", "error", err)
 		os.Exit(1)
 	}
 
-	err = yaml.Unmarshal([]byte(data), &r)
-	if err != nil {
-		slog.Error("Skill issue", "error", err)
-		os.Exit(1)
-	}
+	slog.Debug("Records read from file", "recordsRead", r)
 
 	for _, rec := range r.Records {
-		slog.Info("rec", "Name", rec.Name, "Expect", rec.Expect, "Environmants", rec.Environments)
-		ans, err := query(rec.Name, "1.1.1.1", "53")
-		if err != nil {
-			slog.Error("Skill Issue", "error", err)
-		}
+		if environment == "" || slices.Contains(rec.Environments, environment) {
+			slog.Debug("rec", "Name", rec.Name, "Expect", rec.Expect, "Environmants", rec.Environments)
+			ans, err := internal.PerformLookup(rec.Name)
+			if err != nil {
+				slog.Error("Something went wrong with lookup", "error", err)
+			}
+			slog.Info("Answer(s) found", "answer", ans)
 
-		if rec.Expect != "" && rec.Expect != ans {
-			slog.Warn("Failure to split_ansolve", "record", rec.Name, "got", ans, "expected", rec.Expect)
+			if rec.Expect == "" || slices.Contains(ans, rec.Expect) {
+				slog.Info("Record resolves as expected", "record", rec.Name, "answers", ans, "expected", rec.Expect)
+			} else {
+				slog.Error("Record failes to resolve as expected", "record", rec.Name, "answers", ans, "expected", rec.Expect)
+			}
+		} else {
+			slog.Warn("Environment not in match record environemnts", "environment", environment, "recordEnvironments", rec.Environments, "record", rec.Name)
 		}
-
 	}
+
 }
